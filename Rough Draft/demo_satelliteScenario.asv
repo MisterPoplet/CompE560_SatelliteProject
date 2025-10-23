@@ -1,0 +1,32 @@
+function demo_satelliteScenario
+% Requires: Aerospace Toolbox (R2021a+)  → satelliteScenario/satelliteScenarioViewer
+
+startTime  = datetime('now');
+stopTime   = startTime + minutes(120);
+sampleTime = 1; % s
+
+sc = satelliteScenario(startTime, stopTime, sampleTime);
+
+% Two circular LEOs (roughly 500–550 km)
+Re = 6378.137e3;
+a  = [Re+500e3; Re+550e3];
+e  = [0;0];
+i  = [53; 97];                   % inclinations (deg)
+raan = [0; 40];                  % RAAN (deg)
+argp = [0; 0];
+nu   = [0; 180];
+
+sat = satellite(sc, a, e, i, raan, argp, nu, "Name", ["Sat 1","Sat 2"]);
+sat(1).MarkerColor = [0.2 0.8 1.0];  sat(2).MarkerColor = [0.9 0.7 0.2];
+
+% Ground station ~San Diego
+gs = groundStation(sc, 32.7157, -117.1611, "Name","Server");
+
+% Show viewer
+v = satelliteScenarioViewer(sc);      % 3D globe viewer
+show(sat)                              % show satellites
+groundTrack(sat, LeadTime=3600, TrailTime=600);
+ac = access(sat, gs);                  % line-of-sight access objects
+show(ac)                               % display access when available
+play(sc, PlaybackSpeedMultiplier=40);  % run!
+end
