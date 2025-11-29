@@ -1,223 +1,331 @@
-
 classdef GlobeView < handle
-    % GLOBEVIEW 3D Visualization of the Satellite Network.
-    %   Draws the Earth, Satellites, Ground Stations, and Links.
-    %   Matches the aesthetic of satelliteScenarioViewer (Stars, No Axes).
+    % GLOBEVIEW Wrapper for satelliteScenarioViewer with DTN Controls.
+    %   Uses the native Aerospace Toolbox viewer for 3D visualization.
+    %   Provides a separate Control Panel for DTN-specific actions.
     
     properties
         Sim         % Reference to Simulation object
-        Figure      % MATLAB Figure handle
-        Ax          % Axes handle
+        Scenario    % Reference to satelliteScenario object
+        Viewer      % Handle to satelliteScenarioViewer
         
-        % Graphics Handles
-        NodePlots   % Map: NodeID -> Scatter/Plot handle
-        LinkPlots   % Map: "ID1-ID2" -> Line handle
-        EarthObj    % Handle to the Earth surface
+        % Control Panel Figure
+        CtrlFig
+        
+        % UI Elements
+        NodeList
+        InputName
+        InputLatAlt
+        InputLonInc
+        TypeSelector
     end
     
     methods
         function obj = GlobeView(sim)
             % GLOBEVIEW Constructor
             obj.Sim = sim;
-            obj.NodePlots = containers.Map('KeyType', 'double', 'ValueType', 'any');
-            obj.LinkPlots = containers.Map('KeyType', 'char', 'ValueType', 'any');
             
-            obj.createWindow();
-            obj.drawOrbitPaths(); % Pre-calculate and draw orbits
+            % Extract Scenario from the first node
+            if ~isempty(sim.Nodes)
+                obj.Scenario = sim.Nodes(1).Mobility.Scenario;
+            else
+                error('GlobeView requires at least one node to find the Scenario.');
+            end
+            
+            % 1. Launch Native Viewer
+            obj.Viewer = satelliteScenarioViewer(obj.Scenario); 
+            drawnow; % Give it a moment to appear
+            
+            % 2. Create Separate Control Panel
+            obj.createControlPanel();
             
             % Subscribe to Simulation updates
             addlistener(sim, 'StepComplete', @obj.onStep);
         end
         
-        function createWindow(obj)
-            % CREATEWINDOW Setup the figure and 3D Earth.
-            obj.Figure = figure('Name', 'DTN Satellite Simulation', ...
-                'Color', 'k', 'NumberTitle', 'off', ...
-                'Position', [100, 100, 1200, 900], ... % Larger window
-                'MenuBar', 'none', 'ToolBar', 'figure');
+        function createControlPanel(obj)
+            % CREATECONTROLPANEL Embed controls into the Viewer's figure.
             
-            obj.Ax = axes('Parent', obj.Figure, 'Color', 'k', ...
-                'XColor', 'none', 'YColor', 'none', 'ZColor', 'none'); % Hide axis colors
-            axis(obj.Ax, 'equal');
-            axis(obj.Ax, 'off'); % Turn off axes completely
-            hold(obj.Ax, 'on');
+            % Robustly find the figure
+            figHandle = [];
             
-            % Draw Stars (Background)
-            obj.drawStars();
-            
-            % Draw Earth (Radius ~6371 km)
-            R_earth = 6371;
-            [x, y, z] = sphere(100); % Higher res sphere
-            
-            % Try to load topographic data for texture
+            % 1. Try undocumented property
             try
-                earth_data = load('topo.mat');
-                % topo is 180x360. We need to flip it to match sphere mapping
-                props.FaceColor = 'texture';
-                props.EdgeColor = 'none';
-                props.CData = earth_data.topo;
-                props.FaceLighting = 'gouraud';
-                props.SpecularStrength = 0.2; % Less shiny
-                
-                obj.EarthObj = surface(obj.Ax, x*R_earth, y*R_earth, z*R_earth, props);
-                rotate(obj.EarthObj, [0 0 1], 180); 
+                if isprop(obj.Viewer, 'Figure')
+                    figHandle = obj.Viewer.Figure;
+                end
             catch
-                % Fallback
-                obj.EarthObj = surf(obj.Ax, x*R_earth, y*R_earth, z*R_earth, ...
-                    'FaceColor', [0, 0.5, 1], 'EdgeColor', 'none', 'FaceAlpha', 1.0);
             end
             
-            % Add Lighting (Sun-like)
-            light('Position', [10000, 10000, 10000], 'Style', 'local', 'Parent', obj.Ax);
-            material(obj.EarthObj, 'dull');
+            % 2. Search for standard figures (Visible only)
+            if isempty(figHandle)
+                figHandle = findall(0, 'Type', 'figure', 'Name', 'Satellite Scenario Viewer', 'Visible', 'on');
+            end
             
-            view(3);
-            rotate3d(obj.Ax, 'on');
+            % 3. Search for uifigures (Visible only)
+            if isempty(figHandle)
+                figHandle = findall(0, 'Type', 'uifigure', 'Name', 'Satellite Scenario Viewer', 'Visible', 'on');
+            end
             
-            % Set zoom limits
-            limit = R_earth * 1.5; % Zoom in closer (was 3.0)
-            xlim(obj.Ax, [-limit limit]);
-            ylim(obj.Ax, [-limit limit]);
-            zlim(obj.Ax, [-limit limit]);
-        end
-        
-        function drawStars(obj)
-            % DRAWSTARS Create a starfield background.
-            rng(42); % Fixed seed for consistent stars
-            numStars = 2000;
-            dist = 50000; % Far away
-            
-            % Random spherical coordinates
-            theta = 2 * pi * rand(numStars, 1);
-            phi = acos(2 * rand(numStars, 1) - 1);
-            
-            sx = dist * sin(phi) .* cos(theta);
-            sy = dist * sin(phi) .* sin(theta);
-            sz = dist * cos(phi);
-            
-            plot3(obj.Ax, sx, sy, sz, '.', 'Color', [0.8 0.8 0.8], 'MarkerSize', 1);
-        end
-        
-        function drawOrbitPaths(obj)
-            % DRAWORBITPATHS Draw the trajectory of all satellites.
-            nodes = obj.Sim.Nodes;
-            duration = obj.Sim.Duration;
-            dt = 60; % Step size for orbit drawing (1 min)
-            
-            times = 0:dt:duration;
-            
-            for i = 1:length(nodes)
-                node = nodes(i);
-                if strcmp(node.Type, 'Satellite') && ~isempty(node.Mobility)
-                    % Calculate path
-                    path = zeros(length(times), 3);
-                    for t_idx = 1:length(times)
-                        path(t_idx, :) = node.Mobility.getPosition(times(t_idx));
+            if isempty(figHandle)
+                warning('Could not find Satellite Scenario Viewer figure. Creating separate window.');
+                obj.CtrlFig = figure('Name', 'DTN Controls', 'NumberTitle', 'off', 'MenuBar', 'none');
+                % Fallback to simple layout
+                grid = uigridlayout(obj.CtrlFig, [1 1]);
+                panel = uipanel(grid, 'Title', 'DTN Controls', 'BackgroundColor', [0.1 0.1 0.1], 'ForegroundColor', 'w');
+            else
+                obj.CtrlFig = figHandle(1); % Use the first match
+                disp(['Found Viewer Figure! Type: ' obj.CtrlFig.Type]);
+                
+                % --- Resize Strategy (Less Invasive) ---
+                % Instead of reparenting (which breaks internal listeners), we just resize the canvas.
+                children = obj.CtrlFig.Children;
+                
+                % Identify the Canvas (usually the one that isn't our panel)
+                % For now, assume all existing children are part of the viewer.
+                
+                % Create our Panel first
+                panel = uipanel('Parent', obj.CtrlFig, ...
+                    'Units', 'normalized', ...
+                    'Position', [0.75, 0.0, 0.25, 1.0], ...
+                    'BackgroundColor', [0.1 0.1 0.1], ...
+                    'ForegroundColor', 'w', ...
+                    'Title', 'DTN Controls');
+                
+                % Resize existing children to left 75%
+                for i = 1:length(children)
+                    child = children(i);
+                    try
+                        if isprop(child, 'Units')
+                            child.Units = 'normalized';
+                        end
+                        if isprop(child, 'Position')
+                            child.Position = [0, 0, 0.75, 1.0];
+                        end
+                        % If it's a GeographicGlobe, it might not have standard Position/Units in the same way,
+                        % but usually in a figure it does.
+                    catch
+                        % Ignore if property doesn't exist
                     end
-                    
-                    % Draw Line (Cyan, like the toolbox)
-                    plot3(obj.Ax, path(:,1), path(:,2), path(:,3), ...
-                        'Color', [0, 1, 1, 0.5], 'LineWidth', 1);
+                end
+                
+                % Add a resize listener to enforce this
+                obj.CtrlFig.SizeChangedFcn = @(src, ~) obj.enforceLayout(src, panel);
+            end
+            
+            textColor = 'w';
+            bgColor = [0.1 0.1 0.1];
+            
+            textColor = 'w';
+            bgColor = [0.1 0.1 0.1];
+            
+            % --- Add Controls to the Panel ---
+            
+            % Node List
+            uicontrol('Parent', panel, 'Style', 'text', ...
+                'String', 'Active Nodes:', ...
+                'Units', 'normalized', ...
+                'Position', [0.05, 0.85, 0.9, 0.05], ...
+                'BackgroundColor', bgColor, 'ForegroundColor', textColor, ...
+                'HorizontalAlignment', 'left');
+            
+            obj.NodeList = uicontrol('Parent', panel, 'Style', 'listbox', ...
+                'Units', 'normalized', ...
+                'Position', [0.05, 0.45, 0.9, 0.4], ...
+                'BackgroundColor', [0.2 0.2 0.2], 'ForegroundColor', textColor);
+            
+            % Remove Button
+            uicontrol('Parent', panel, 'Style', 'pushbutton', ...
+                'String', 'REMOVE AGENT', ...
+                'Units', 'normalized', ...
+                'Position', [0.05, 0.40, 0.9, 0.04], ...
+                'Callback', @obj.onRemoveNode, ...
+                'BackgroundColor', [0.6 0 0], 'ForegroundColor', 'w', 'FontWeight', 'bold');
+            
+            % Add Node Controls
+            uicontrol('Parent', panel, 'Style', 'text', ...
+                'String', 'Add New Agent:', ...
+                'Units', 'normalized', ...
+                'Position', [0.05, 0.35, 0.9, 0.05], ...
+                'BackgroundColor', bgColor, 'ForegroundColor', textColor, ...
+                'HorizontalAlignment', 'left', 'FontWeight', 'bold');
+            
+            obj.TypeSelector = uicontrol('Parent', panel, 'Style', 'popupmenu', ...
+                'String', {'Ground Station', 'Satellite'}, ...
+                'Units', 'normalized', ...
+                'Position', [0.05, 0.28, 0.9, 0.05], ...
+                'Callback', @obj.onTypeChange);
+            
+            uicontrol('Parent', panel, 'Style', 'text', ...
+                'String', 'Name:', ...
+                'Units', 'normalized', ...
+                'Position', [0.05, 0.22, 0.2, 0.04], ...
+                'BackgroundColor', bgColor, 'ForegroundColor', textColor, 'HorizontalAlignment', 'left');
+            obj.InputName = uicontrol('Parent', panel, 'Style', 'edit', ...
+                'String', 'Sat-X', ...
+                'Units', 'normalized', ...
+                'Position', [0.3, 0.22, 0.65, 0.04]);
+            
+            uicontrol('Parent', panel, 'Style', 'text', ...
+                'String', 'Param 1:', ...
+                'Tag', 'Lbl1', ...
+                'Units', 'normalized', ...
+                'Position', [0.05, 0.16, 0.2, 0.04], ...
+                'BackgroundColor', bgColor, 'ForegroundColor', textColor, 'HorizontalAlignment', 'left');
+            obj.InputLatAlt = uicontrol('Parent', panel, 'Style', 'edit', ...
+                'String', '500', ...
+                'Units', 'normalized', ...
+                'Position', [0.3, 0.16, 0.65, 0.04]);
+            
+            uicontrol('Parent', panel, 'Style', 'text', ...
+                'String', 'Param 2:', ...
+                'Tag', 'Lbl2', ...
+                'Units', 'normalized', ...
+                'Position', [0.05, 0.10, 0.2, 0.04], ...
+                'BackgroundColor', bgColor, 'ForegroundColor', textColor, 'HorizontalAlignment', 'left');
+            obj.InputLonInc = uicontrol('Parent', panel, 'Style', 'edit', ...
+                'String', '53', ...
+                'Units', 'normalized', ...
+                'Position', [0.3, 0.10, 0.65, 0.04]);
+            
+            uicontrol('Parent', panel, 'Style', 'pushbutton', ...
+                'String', 'DEPLOY AGENT', ...
+                'Units', 'normalized', ...
+                'Position', [0.05, 0.02, 0.9, 0.06], ...
+                'Callback', @obj.onAddNode, ...
+                'BackgroundColor', [0 0.6 0], 'ForegroundColor', 'w', 'FontWeight', 'bold');
+            
+            % Initial Update
+            obj.updateNodeList();
+            obj.onTypeChange(obj.TypeSelector, []);
+        end
+        
+        function onTypeChange(obj, src, ~)
+            idx = src.Value;
+            % Find labels within the parent panel of the source object
+            panel = src.Parent;
+            lbl1 = findobj(panel, 'Tag', 'Lbl1');
+            lbl2 = findobj(panel, 'Tag', 'Lbl2');
+            
+            if idx == 1 % Ground Station
+                lbl1.String = 'Lat:';
+                lbl2.String = 'Lon:';
+                obj.InputLatAlt.String = '32.7';
+                obj.InputLonInc.String = '-117.1';
+                obj.InputName.String = 'GS-New';
+            else % Satellite
+                lbl1.String = 'Alt (km):';
+                lbl2.String = 'Inc (deg):';
+                obj.InputLatAlt.String = '500';
+                obj.InputLonInc.String = '53';
+                obj.InputName.String = 'Sat-New';
+            end
+        end
+        
+        function onAddNode(obj, ~, ~)
+            name = obj.InputName.String;
+            val1 = str2double(obj.InputLatAlt.String);
+            val2 = str2double(obj.InputLonInc.String);
+            typeIdx = obj.TypeSelector.Value;
+            
+            % Check Duplicate
+            for i = 1:length(obj.Sim.Nodes)
+                if strcmp(obj.Sim.Nodes(i).Name, name)
+                    errordlg('Name already exists!'); return;
                 end
             end
+            
+            newId = length(obj.Sim.Nodes) + 100 + randi(900);
+            
+            try
+                if typeIdx == 1 % Ground Station
+                    asset = groundStation(obj.Scenario, val1, val2, 'Name', name);
+                    mob = dtn.core.AerospaceMobility(asset, obj.Scenario);
+                    node = dtn.core.Node(newId, name, 'GroundStation', 1e9, 'S-Band', 'Epidemic', mob, obj.Sim);
+                else % Satellite
+                    Re = 6378137;
+                    sma = Re + (val1 * 1000);
+                    inc = val2;
+                    asset = satellite(obj.Scenario, sma, 0, inc, 0, 0, 0, 'Name', name);
+                    % show(asset); % Ensure visible
+                    mob = dtn.core.AerospaceMobility(asset, obj.Scenario);
+                    node = dtn.core.Node(newId, name, 'Satellite', 1e6, 'S-Band', 'Epidemic', mob, obj.Sim);
+                end
+                
+                obj.Sim.addNode(node);
+                obj.updateNodeList();
+                
+                % Feedback
+                disp(['Deployed agent: ' name]);
+                
+            catch e
+                errordlg(['Failed to deploy agent: ' e.message]);
+            end
+        end
+        
+        function onRemoveNode(obj, ~, ~)
+            idx = obj.NodeList.Value;
+            if isempty(idx) || idx < 1 || idx > length(obj.Sim.Nodes)
+                return;
+            end
+            
+            node = obj.Sim.Nodes(idx);
+            name = node.Name;
+            
+            try
+                % 1. Remove from Scenario (Visual)
+                if ~isempty(node.Mobility) && ~isempty(node.Mobility.Asset)
+                    % Try to remove the asset from the scenario
+                    % Note: 'remove' might not be available on all asset objects directly,
+                    % but 'delete' usually works for handles.
+                    delete(node.Mobility.Asset);
+                end
+                
+                % 2. Remove from Simulation (Logic)
+                obj.Sim.Nodes(idx) = [];
+                
+                % 3. Update UI
+                obj.updateNodeList();
+                
+                % Reset selection if out of bounds
+                if obj.NodeList.Value > length(obj.Sim.Nodes)
+                    obj.NodeList.Value = max(1, length(obj.Sim.Nodes));
+                end
+                
+                disp(['Removed agent: ' name]);
+                
+            catch e
+                errordlg(['Failed to remove agent: ' e.message]);
+            end
+        end
+        
+        function updateNodeList(obj)
+            names = {};
+            for i = 1:length(obj.Sim.Nodes)
+                names{end+1} = obj.Sim.Nodes(i).Name;
+            end
+            obj.NodeList.String = names;
         end
         
         function onStep(obj, ~, ~)
-            % ONSTEP Called every simulation frame.
-            if ~isvalid(obj.Figure), return; end
-            
-            obj.drawNodes();
-            obj.drawLinks();
-            
-            title(obj.Ax, sprintf('Time: %.1f s', obj.Sim.Time), ...
-                'Color', 'w', 'FontSize', 14, 'FontWeight', 'bold');
-            drawnow limitrate; 
+            % No-op for now, as Viewer handles itself.
+            % We could update a time label if we had one, but the Viewer has one.
         end
         
-        function drawNodes(obj)
-            % DRAWNODES Update positions of all nodes.
-            nodes = obj.Sim.Nodes;
-            for i = 1:length(nodes)
-                node = nodes(i);
-                pos = node.Position;
-                
-                if ~isKey(obj.NodePlots, node.Id)
-                    % First time setup
-                    if strcmp(node.Type, 'GroundStation')
-                        % Ground Station: Red Triangle
-                        h = plot3(obj.Ax, pos(1), pos(2), pos(3), ...
-                            'Marker', '^', 'MarkerSize', 8, ...
-                            'MarkerFaceColor', 'r', 'Color', 'w');
-                        
-                        % Label
-                        text(obj.Ax, pos(1)*1.05, pos(2)*1.05, pos(3)*1.05, ['  ' node.Name], ...
-                            'Color', 'w', 'FontSize', 10, 'FontWeight', 'bold');
-                    else
-                        % Satellite: Cyan/White Dot with Label
-                        h = plot3(obj.Ax, pos(1), pos(2), pos(3), ...
-                            'Marker', 'o', 'MarkerSize', 6, ...
-                            'MarkerFaceColor', 'c', 'Color', 'w');
-                        
-                        % Label (floating slightly above)
-                        text(obj.Ax, pos(1), pos(2), pos(3)+500, ['  ' node.Name], ...
-                            'Color', 'c', 'FontSize', 9);
-                    end
-                    
-                    obj.NodePlots(node.Id) = h;
-                else
-                    % Update position
-                    h = obj.NodePlots(node.Id);
-                    set(h, 'XData', pos(1), 'YData', pos(2), 'ZData', pos(3));
-                end
-            end
-        end
-        
-        function drawLinks(obj)
-            % DRAWLINKS Draw lines between connected neighbors.
-            nodes = obj.Sim.Nodes;
-            currentLinks = {};
-            
-            for i = 1:length(nodes)
-                node = nodes(i);
-                neighbors = node.Link.Neighbors;
-                keys = neighbors.keys;
-                
-                for k = 1:length(keys)
-                    peerId = keys{k};
-                    state = neighbors(peerId);
-                    
-                    if strcmp(state.Status, 'CONNECTED')
-                        id1 = min(node.Id, peerId);
-                        id2 = max(node.Id, peerId);
-                        linkKey = sprintf('%d-%d', id1, id2);
-                        currentLinks{end+1} = linkKey;
-                        
-                        peer = node.getPeer(peerId);
-                        p1 = node.Position;
-                        p2 = peer.Position;
-                        
-                        if ~isKey(obj.LinkPlots, linkKey)
-                            % Create Line (Yellow, Dashed)
-                            h = plot3(obj.Ax, [p1(1) p2(1)], [p1(2) p2(2)], [p1(3) p2(3)], ...
-                                'Color', 'y', 'LineWidth', 2, 'LineStyle', ':');
-                            obj.LinkPlots(linkKey) = h;
-                        else
-                            % Update Line
-                            h = obj.LinkPlots(linkKey);
-                            set(h, 'XData', [p1(1) p2(1)], 'YData', [p1(2) p2(2)], 'ZData', [p1(3) p2(3)]);
-                        end
+        function enforceLayout(obj, fig, panel)
+            % ENFORCELAYOUT Ensure the panel stays on the right and canvas on the left.
+            try
+                children = fig.Children;
+                for i = 1:length(children)
+                    child = children(i);
+                    if child == panel
+                        child.Position = [0.75, 0.0, 0.25, 1.0];
+                    elseif isprop(child, 'Position') && isprop(child, 'Units')
+                        child.Units = 'normalized';
+                        child.Position = [0.0, 0.0, 0.75, 1.0];
                     end
                 end
-            end
-            
-            % Remove stale links
-            allKeys = obj.LinkPlots.keys;
-            for k = 1:length(allKeys)
-                key = allKeys{k};
-                if ~ismember(key, currentLinks)
-                    delete(obj.LinkPlots(key));
-                    remove(obj.LinkPlots, key);
-                end
+            catch
+                % Ignore errors during resize
             end
         end
     end
