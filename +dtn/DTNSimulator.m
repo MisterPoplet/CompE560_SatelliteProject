@@ -15,22 +15,24 @@ classdef DTNSimulator < handle
         routing        char      % 'Epidemic' | 'PRoPHET' | 'SprayAndWait'
         phyMode        char      % 'SBand' | 'KaBand' | 'SatelliteRF'
         startTime      datetime
-        horizonMinutes double    % total duration
-        stepMinutes    double    % step size
+        horizonMinutes double    % total duration (minutes)
+        stepSeconds    double    % step size (seconds)
         ttlMinutes     double    % TTL (unused for now, but stored)
+        realTimeSpeed  double    % playback speed (x real time; 0 => as fast as possible)
         
         % State
         bundles        struct = struct('id',{}, 'src',{}, 'dst',{}, ...
                                        'holders',{}, 'delivered',{}, ...
                                        'deliveredTime',{});
         logLines       cell   = {}
+        logCallback    % optional GUI callback
     end
     
     methods
         function obj = DTNSimulator(cfg)
             % cfg is a struct with fields:
             %   srcName, dstName, numBundles, routing, phyMode,
-            %   startTime, horizonMinutes, stepMinutes, ttlMinutes
+            %   startTime, horizonMinutes, stepSeconds, realTimeSpeed, ttlMinutes
             
             obj.srcName        = cfg.srcName;
             obj.dstName        = cfg.dstName;
@@ -39,10 +41,12 @@ classdef DTNSimulator < handle
             obj.phyMode        = cfg.phyMode;
             obj.startTime      = cfg.startTime;
             obj.horizonMinutes = cfg.horizonMinutes;
-            obj.stepMinutes    = cfg.stepMinutes;
+            obj.stepSeconds    = cfg.stepSeconds;
             obj.ttlMinutes     = cfg.ttlMinutes;
+            obj.realTimeSpeed  = cfg.realTimeSpeed;
             
-            obj.logLines = {};
+            obj.logLines   = {};
+            obj.logCallback = [];
         end
         
         function [bundles, logLines] = run(obj, scenarioManager, viewer)
@@ -79,11 +83,11 @@ classdef DTNSimulator < handle
                                  'holders',{}, 'delivered',{}, ...
                                  'deliveredTime',{});
             for b = 1:obj.numBundles
-                bd.id           = b;
-                bd.src          = obj.srcName;
-                bd.dst          = obj.dstName;
-                bd.holders      = {obj.srcName};
-                bd.delivered    = false;
+                bd.id            = b;
+                bd.src           = obj.srcName;
+                bd.dst           = obj.dstName;
+                bd.holders       = {obj.srcName};
+                bd.delivered     = false;
                 bd.deliveredTime = NaT;
                 obj.bundles(end+1) = bd;
             end
@@ -98,14 +102,15 @@ classdef DTNSimulator < handle
                     obj.routing));
             end
             
-            nSteps = floor(obj.horizonMinutes / obj.stepMinutes);
+            totalSeconds = obj.horizonMinutes * 60;
+            nSteps = floor(totalSeconds / obj.stepSeconds);
             if nSteps < 1
                 nSteps = 1;
             end
             
             % Main time-stepped loop
             for step = 1:nSteps
-                t = obj.startTime + minutes((step-1)*obj.stepMinutes);
+                t = obj.startTime + seconds((step-1)*obj.stepSeconds);
                 
                 % Move viewer time, if provided
                 if ~isempty(viewer) && isvalid(viewer)
@@ -164,10 +169,11 @@ classdef DTNSimulator < handle
                                 continue;
                             end
                             
-                            % Epidemic-like forward (only from original holders this step)
+                            % Epidemic-like forward
                             newHolders{end+1} = neighName; %#ok<AGROW>
                             obj.appendLog(sprintf('t=%s: bundle %d forwarded %s -> %s', ...
-                                datestr(t), obj.bundles(b).id, hName, neighName));
+                                datestr(t, 'dd-mmm-yyyy HH:MM:SS'), ...
+                                obj.bundles(b).id, hName, neighName));
                         end
                     end
                     
@@ -179,12 +185,18 @@ classdef DTNSimulator < handle
                             obj.bundles(b).delivered     = true;
                             obj.bundles(b).deliveredTime = t;
                             obj.appendLog(sprintf('t=%s: bundle %d DELIVERED at %s', ...
-                                datestr(t), obj.bundles(b).id, obj.dstName));
+                                datestr(t, 'dd-mmm-yyyy HH:MM:SS'), ...
+                                obj.bundles(b).id, obj.dstName));
                         end
                     end
                 end
                 
                 drawnow;  % let viewer refresh
+                
+                % Real-time playback: pause according to speed factor
+                if obj.realTimeSpeed > 0
+                    pause(obj.stepSeconds / obj.realTimeSpeed);
+                end
                 
                 if allDelivered
                     break;
@@ -194,6 +206,18 @@ classdef DTNSimulator < handle
             deliveredCount = sum([obj.bundles.delivered]);
             obj.appendLog(sprintf('--- Scenario end: %d/%d bundles delivered ---', ...
                 deliveredCount, numel(obj.bundles)));
+            
+            % Per-bundle delay summary (relative to scenario start)
+            for b = 1:numel(obj.bundles)
+                if obj.bundles(b).delivered
+                    delaySec = seconds(obj.bundles(b).deliveredTime - obj.startTime);
+                    obj.appendLog(sprintf('Bundle %d delivery delay: %.1f s', ...
+                        obj.bundles(b).id, delaySec));
+                else
+                    obj.appendLog(sprintf('Bundle %d NOT delivered within horizon.', ...
+                        obj.bundles(b).id));
+                end
+            end
             
             bundles  = obj.bundles;
             logLines = obj.logLines;
@@ -273,7 +297,17 @@ classdef DTNSimulator < handle
         end
         
         function appendLog(obj, msg)
+            % Store in internal log
             obj.logLines{end+1} = msg;
+            
+            % Stream to GUI if callback is set
+            if ~isempty(obj.logCallback)
+                try
+                    obj.logCallback(msg);
+                catch
+                    % ignore GUI errors so sim can keep running
+                end
+            end
         end
     end
 end

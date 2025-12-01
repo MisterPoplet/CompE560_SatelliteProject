@@ -70,6 +70,7 @@ classdef DTNApp < handle
         scenarioNumBundlesField matlab.ui.control.NumericEditField
         scenarioRoutingDropDown matlab.ui.control.DropDown
         scenarioPHYDropDown     matlab.ui.control.DropDown
+        scenarioSpeedField      matlab.ui.control.NumericEditField
         runScenarioButton       matlab.ui.control.Button
     end
     
@@ -130,7 +131,7 @@ classdef DTNApp < handle
                 'Position', [figW - logsW - margin, margin, logsW, figH - 2*margin]);
             app.createLogsPanelUI();
             
-            % Tab group on the left (fixed-ish width)
+            % Tab group on the left (fixed width)
             tabW = figW - logsW - 3*margin;
             app.tabGroup = uitabgroup(app.fig, ...
                 'Position', [margin, margin, tabW, figH - 2*margin]);
@@ -343,13 +344,22 @@ classdef DTNApp < handle
                 'Items', {'SBand','KaBand','SatelliteRF'}, ...
                 'Value', app.dtnConfig.phyMode);
             
+            % Playback speed (x real time)
+            uilabel(panel, 'Position', [20 360 200 20], ...
+                'Text', 'Playback speed (x real time):');
+            app.scenarioSpeedField = uieditfield(panel, 'numeric', ...
+                'Position', [220 360 80 22], ...
+                'Value', 5, ...
+                'Limits', [0 Inf]);   % 0 = run as fast as possible
+            
             app.runScenarioButton = uibutton(panel, 'push', ...
                 'Text', 'Run Scenario', ...
-                'Position', [20 350 150 30], ...
+                'Position', [20 320 150 30], ...
                 'ButtonPushedFcn', @(src,evt) app.onRunScenarioButton());
             
-            uilabel(panel, 'Position', [20 310 500 40], ...
-                'Text', sprintf('Example: Source = SAT-4, Dest = SAT-9, Bundles = 3.\nRouting will be simulated with store-carry-forward (Epidemic for now).'));
+            uilabel(panel, 'Position', [20 280 500 40], ...
+                'Text', sprintf(['Example: Source = SAT-4, Dest = SAT-9, Bundles = 3.\n' ...
+                                 'Routing will be simulated with store-carry-forward (Epidemic for now).']));
         end
         
         function postInitSetup(app)
@@ -393,6 +403,12 @@ classdef DTNApp < handle
         
         function onClearLogButton(app)
             app.logLines = {};
+            app.updateLogText();
+        end
+
+        function appendLogFromSim(app, msg)
+            % Called by DTNSimulator via logCallback while the sim runs
+            app.logLines{end+1} = msg;
             app.updateLogText();
         end
         
@@ -513,7 +529,7 @@ classdef DTNApp < handle
             dKm = norm(p1 - p2);
             profile = dtn.PHYProfiles.getProfile(app.dtnConfig.phyMode);
             if dKm > profile.maxRangeKm
-                msg = sprintf(['Cannot communicate: range %.1f km exceeds max range %.2f km ', ...
+                msg = sprintf(['Cannot communicate: range %.1f km exceeds max range %.2f km ' ...
                                'for PHY mode %s.'], ...
                                dKm, profile.maxRangeKm, profile.name);
                 uialert(app.fig, msg, 'Out of Range');
@@ -542,11 +558,6 @@ classdef DTNApp < handle
         
         function tf = hasLOSFromXYZ(app, p1Km, p2Km)
             % hasLOSFromXYZ - geometric line-of-sight test vs Earth sphere
-            %
-            % p1Km, p2Km: 1x3 position vectors in km (ECEF-ish)
-            % Returns true if the line segment does NOT intersect the
-            % Earth sphere (radius ReKm).
-            
             ReKm = 6371;
             d = p2Km - p1Km;
             r1 = p1Km;
@@ -557,7 +568,6 @@ classdef DTNApp < handle
             
             disc = b^2 - 4*a*c;
             if disc <= 0
-                % No intersection with infinite line => LOS
                 tf = true;
                 return;
             end
@@ -565,7 +575,6 @@ classdef DTNApp < handle
             s1 = (-b - sqrt(disc)) / (2*a);
             s2 = (-b + sqrt(disc)) / (2*a);
             
-            % If either intersection lies on the segment, Earth blocks it
             if (s1 >= 0 && s1 <= 1) || (s2 >= 0 && s2 <= 1)
                 tf = false;
             else
@@ -634,17 +643,28 @@ classdef DTNApp < handle
             cfg.routing        = routing;
             cfg.phyMode        = phyMode;
             cfg.startTime      = app.scenarioManager.startTime;
-            cfg.horizonMinutes = 240;   % 4 hours
-            cfg.stepMinutes    = 5;     % 5-minute steps
+            
+            % Simulation horizon + resolution
+            cfg.horizonMinutes = 60;    % simulate 1 hour (adjust as needed)
+            cfg.stepSeconds    = 1;     % 1-second simulation steps
+            
+            % Real-time playback speed (0 => run as fast as possible)
+            cfg.realTimeSpeed  = app.scenarioSpeedField.Value;
+            
             cfg.ttlMinutes     = app.dtnConfig.ttlMinutes;
             
+            % Create simulator
             sim = dtn.DTNSimulator(cfg);
-            [~, logs] = sim.run(app.scenarioManager, app.viewer);
             
-            % Replace log with scenario run logs
-            app.logLines = logs;
+            % Clear log and stream messages live from simulator
+            app.logLines = {};
             app.updateLogText();
+            sim.logCallback = @(msg) app.appendLogFromSim(msg);
+            
+            % Run simulation (logs will appear as it runs)
+            sim.run(app.scenarioManager, app.viewer);
         end
+
         
         %% Helper updates
         
