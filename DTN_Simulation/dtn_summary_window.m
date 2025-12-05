@@ -73,8 +73,8 @@ g1 = uigridlayout(p1,[9,2]);
 g1.RowHeight   = repmat({'fit'},1,9);
 g1.ColumnWidth = {'1x','1x'};
 
-addRow(g1,"Packets Created:",            total_created,defaultFont);
 addRow(g1,"Simulation Duration (days):", sprintf('%.2f',sim_days),defaultFont);
+addRow(g1,"Packets Created:",            total_created,defaultFont);
 addRow(g1,"Packets Delivered:",          total_delivered,defaultFont);
 addRow(g1,"Delivery Ratio:",             sprintf('%.3f',delivery_ratio),defaultFont);
 addRow(g1,"Packets per Hour:",           sprintf('%.2f',packets_per_hour),defaultFont);
@@ -92,7 +92,6 @@ g2.ColumnWidth = {'1x','1x'};
 addRow(g2,"Mean Latency (s):",    sprintf('%.2f',mean_lat),defaultFont);
 addRow(g2,"Median Latency (s):",  sprintf('%.2f',med_lat),defaultFont);
 addRow(g2,"95th Percentile (s):", sprintf('%.2f',p95_lat),defaultFont);
-addRow(g2,"Delivered Packets:",   total_delivered,defaultFont);
 
 %% ========== PANEL 3 (BOTTOM-LEFT): BUFFERS / ROUTING / TOPOLOGY ==========
 p3 = uipanel(mainGrid,'Title','Buffers, Routing & Topology','FontSize',defaultFont+1);
