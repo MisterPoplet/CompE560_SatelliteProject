@@ -10,7 +10,8 @@ function S = dtn_two_gs(cfg)
 %   - Air-byte accounting (uplink + downlink, all copies) + simple ARQ factor
 %   - DEFAULT: synthetic contact plan so the run always has deliveries.
 %   - Set cfg.useSyntheticPlan=false to use real LEO via Aerospace Toolbox.
-%   - NEW: cfg.orbitClass = "LEO" | "MEO" | "GEO" for synthetic plans.
+%   - orbitClass = "LEO" | "MEO" | "GEO" for synthetic plans.
+%   - numSatellites controls the number of synthetic satellites.
 
 %% ======== Config (with optional cfg struct) ========
 if nargin < 1
@@ -111,6 +112,12 @@ if ~isfield(cfg,'orbitClass')
 end
 orbitClass = upper(string(cfg.orbitClass));
 
+% Number of satellites (only used in synthetic mode)
+if ~isfield(cfg,'numSatellites')
+    cfg.numSatellites = 3;
+end
+numSatConfig = cfg.numSatellites;
+
 % Viewer toggle (only for real-orbit LEO mode)
 if ~isfield(cfg,'USE_VIEWER')
     cfg.USE_VIEWER = true;
@@ -129,14 +136,14 @@ if USE_SYNTH_PLAN
     % ---- Synthetic mobility contact plans (LEO/MEO/GEO) ----
     switch orbitClass
         case "LEO"
-            contacts = build_synthetic_contacts_leo(startTime,stopTime);
+            contacts = build_synthetic_contacts_leo(startTime,stopTime,numSatConfig);
         case "MEO"
-            contacts = build_synthetic_contacts_meo(startTime,stopTime);
+            contacts = build_synthetic_contacts_meo(startTime,stopTime,numSatConfig);
         case "GEO"
-            contacts = build_synthetic_contacts_geo(startTime,stopTime);
+            contacts = build_synthetic_contacts_geo(startTime,stopTime,numSatConfig);
         otherwise
             warning('Unknown orbitClass "%s"; falling back to LEO.',orbitClass);
-            contacts = build_synthetic_contacts_leo(startTime,stopTime);
+            contacts = build_synthetic_contacts_leo(startTime,stopTime,numSatConfig);
     end
     satNames = unique(string(contacts.Sat)).';
 else
@@ -678,7 +685,7 @@ IDs(expMask)   = [];
 end
 
 %% ===== Synthetic contact plans (LEO / MEO / GEO) =====
-function contacts = build_synthetic_contacts_leo(startTime,stopTime)
+function contacts = build_synthetic_contacts_leo(startTime,stopTime,numSat)
 % LEO-like: short, frequent passes
 durContact = minutes(10);
 gap        = minutes(40);
@@ -686,7 +693,12 @@ rate_Mbps  = 10;
 rate_Bps   = rate_Mbps*1e6/8;
 prop_delay = 0.06;   % ~60 ms one-way
 
-sats  = ["LEO-1","LEO-2","LEO-3"];
+% Generate satellite names LEO-1, LEO-2, ..., LEO-N
+sats = strings(1,numSat);
+for s = 1:numSat
+    sats(s) = "LEO-" + s;
+end
+
 links = ["GS1","GS2"];
 contacts = empty_contacts_table();
 
@@ -709,7 +721,7 @@ end
 contacts = sortrows(contacts,'StartTime');
 end
 
-function contacts = build_synthetic_contacts_meo(startTime,stopTime)
+function contacts = build_synthetic_contacts_meo(startTime,stopTime,numSat)
 % MEO-like: longer but less frequent passes
 durContact = minutes(20);
 gap        = minutes(80);
@@ -717,7 +729,12 @@ rate_Mbps  = 7;
 rate_Bps   = rate_Mbps*1e6/8;
 prop_delay = 0.12;   % ~120 ms one-way
 
-sats  = ["MEO-1","MEO-2","MEO-3"];
+% Generate satellite names MEO-1, MEO-2, ..., MEO-N
+sats = strings(1,numSat);
+for s = 1:numSat
+    sats(s) = "MEO-" + s;
+end
+
 links = ["GS1","GS2"];
 contacts = empty_contacts_table();
 
@@ -740,7 +757,7 @@ end
 contacts = sortrows(contacts,'StartTime');
 end
 
-function contacts = build_synthetic_contacts_geo(startTime,stopTime)
+function contacts = build_synthetic_contacts_geo(startTime,stopTime,numSat)
 % GEO-like: very long, almost continuous contacts
 durContact = minutes(120);   % 2-hour windows
 gap        = minutes(20);
@@ -748,7 +765,12 @@ rate_Mbps  = 3;
 rate_Bps   = rate_Mbps*1e6/8;
 prop_delay = 0.24;   % ~240 ms one-way
 
-sats  = ["GEO-1","GEO-2","GEO-3"];
+% Generate satellite names GEO-1, GEO-2, ..., GEO-N
+sats = strings(1,numSat);
+for s = 1:numSat
+    sats(s) = "GEO-" + s;
+end
+
 links = ["GS1","GS2"];
 contacts = empty_contacts_table();
 
