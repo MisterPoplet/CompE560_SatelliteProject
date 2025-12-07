@@ -19,20 +19,22 @@ classdef DTNSimulator < handle
         stepSeconds    double    % step size (seconds)
         ttlMinutes     double    % TTL (unused for now, but stored)
         realTimeSpeed  double    % playback speed (x real time; 0 => as fast as possible)
+        packetSizeBytes double   % bundle size (bytes)
         
         % State
         bundles        struct = struct('id',{}, 'src',{}, 'dst',{}, ...
                                        'holders',{}, 'delivered',{}, ...
-                                       'deliveredTime',{});
+                                       'deliveredTime',{}, 'numHops',{});
         logLines       cell   = {}
-        logCallback    % optional GUI callback
+        logCallback                    % optional GUI callback (function handle or [])
     end
     
     methods
         function obj = DTNSimulator(cfg)
             % cfg is a struct with fields:
             %   srcName, dstName, numBundles, routing, phyMode,
-            %   startTime, horizonMinutes, stepSeconds, realTimeSpeed, ttlMinutes
+            %   startTime, horizonMinutes, stepSeconds, realTimeSpeed,
+            %   ttlMinutes, packetSizeBytes
             
             obj.srcName        = cfg.srcName;
             obj.dstName        = cfg.dstName;
@@ -44,8 +46,9 @@ classdef DTNSimulator < handle
             obj.stepSeconds    = cfg.stepSeconds;
             obj.ttlMinutes     = cfg.ttlMinutes;
             obj.realTimeSpeed  = cfg.realTimeSpeed;
+            obj.packetSizeBytes = cfg.packetSizeBytes;
             
-            obj.logLines   = {};
+            obj.logLines    = {};
             obj.logCallback = [];
         end
         
@@ -78,18 +81,19 @@ classdef DTNSimulator < handle
                 error('Destination node %s not found.', obj.dstName);
             end
             
-            % Initialize bundles
-            obj.bundles = struct('id',{}, 'src',{}, 'dst',{}, ...
-                                 'holders',{}, 'delivered',{}, ...
-                                 'deliveredTime',{});
+            % Initialize bundles (preallocate with final struct shape)
+            proto = struct('id',0, 'src','', 'dst','', ...
+                           'holders',{{}}, 'delivered',false, ...
+                           'deliveredTime',NaT, 'numHops',0);
+            obj.bundles = repmat(proto, 1, obj.numBundles);
             for b = 1:obj.numBundles
-                bd.id            = b;
-                bd.src           = obj.srcName;
-                bd.dst           = obj.dstName;
-                bd.holders       = {obj.srcName};
-                bd.delivered     = false;
-                bd.deliveredTime = NaT;
-                obj.bundles(end+1) = bd;
+                obj.bundles(b).id            = b;
+                obj.bundles(b).src           = obj.srcName;
+                obj.bundles(b).dst           = obj.dstName;
+                obj.bundles(b).holders       = {obj.srcName};
+                obj.bundles(b).delivered     = false;
+                obj.bundles(b).deliveredTime = NaT;
+                obj.bundles(b).numHops       = 0;
             end
             
             profile = dtn.PHYProfiles.getProfile(obj.phyMode);
@@ -120,7 +124,7 @@ classdef DTNSimulator < handle
                     end
                 end
                 
-                % Compute node positions / adjacency
+                % Compute node positions / adjacency using states() for all nodes
                 [x, y, z] = obj.computeNodeXYZ(scenarioManager, nodeNames, t);
                 
                 % Connectivity matrix based on PHY range AND LOS
@@ -171,8 +175,9 @@ classdef DTNSimulator < handle
                             
                             % Epidemic-like forward
                             newHolders{end+1} = neighName; %#ok<AGROW>
+                            obj.bundles(b).numHops = obj.bundles(b).numHops + 1;
                             obj.appendLog(sprintf('t=%s: bundle %d forwarded %s -> %s', ...
-                                datestr(t, 'dd-mmm-yyyy HH:MM:SS'), ...
+                                datestr(t, 'dd-mmm-yyyy HH:MM:SS.FFF'), ...
                                 obj.bundles(b).id, hName, neighName));
                         end
                     end
@@ -185,7 +190,7 @@ classdef DTNSimulator < handle
                             obj.bundles(b).delivered     = true;
                             obj.bundles(b).deliveredTime = t;
                             obj.appendLog(sprintf('t=%s: bundle %d DELIVERED at %s', ...
-                                datestr(t, 'dd-mmm-yyyy HH:MM:SS'), ...
+                                datestr(t, 'dd-mmm-yyyy HH:MM:SS.FFF'), ...
                                 obj.bundles(b).id, obj.dstName));
                         end
                     end
@@ -207,12 +212,20 @@ classdef DTNSimulator < handle
             obj.appendLog(sprintf('--- Scenario end: %d/%d bundles delivered ---', ...
                 deliveredCount, numel(obj.bundles)));
             
+            % PHY-based per-hop delay (one-way) for bundles
+            packetBits = obj.packetSizeBytes * 8;
+            hopDelay_s = packetBits / profile.dataRate_bps + profile.handshakeOverhead_s;
+            
             % Per-bundle delay summary (relative to scenario start)
             for b = 1:numel(obj.bundles)
                 if obj.bundles(b).delivered
-                    delaySec = seconds(obj.bundles(b).deliveredTime - obj.startTime);
-                    obj.appendLog(sprintf('Bundle %d delivery delay: %.1f s', ...
-                        obj.bundles(b).id, delaySec));
+                    baseDelay_s   = seconds(obj.bundles(b).deliveredTime - obj.startTime);
+                    protoDelay_s  = obj.bundles(b).numHops * hopDelay_s;
+                    totalDelay_s  = baseDelay_s + protoDelay_s;
+                    obj.appendLog(sprintf(['Bundle %d delivery delay: %.6f s ' ...
+                                           '(path=%.3f s, PHY-extra=%.6f s, hops=%d, PHY=%s)'], ...
+                        obj.bundles(b).id, totalDelay_s, baseDelay_s, ...
+                        protoDelay_s, obj.bundles(b).numHops, profile.name));
                 else
                     obj.appendLog(sprintf('Bundle %d NOT delivered within horizon.', ...
                         obj.bundles(b).id));
@@ -228,53 +241,25 @@ classdef DTNSimulator < handle
         function [x, y, z] = computeNodeXYZ(obj, scenarioManager, nodeNames, t)
             % computeNodeXYZ - get node positions for distance calculations
             %
-            % Satellites: use states(handle, t) to get inertial/ECEF position (m).
-            % Ground stations: use stored lat/lon/alt and convert to ECEF-ish.
+            % Uses ScenarioManager.getXYZ() so geometry matches ping and
+            % the satellite viewer (for sats; GS are spherical Earth).
             
             nNodes = numel(nodeNames);
             x = zeros(1, nNodes);
             y = zeros(1, nNodes);
             z = zeros(1, nNodes);
             
-            ReKm = 6371;  % Earth radius in km (approx)
-            
             for i = 1:nNodes
-                idx = scenarioManager.findNodeIndex(nodeNames{i});
-                if isempty(idx)
-                    error('Node %s not found in ScenarioManager.', nodeNames{i});
-                end
-                node = scenarioManager.nodes(idx);
-                
-                if strcmp(node.type, 'gs')
-                    % Ground station: use stored geographic coords
-                    latDeg = node.latDeg;
-                    lonDeg = node.lonDeg;
-                    altM   = node.altM;
-                    
-                    latRad = deg2rad(latDeg);
-                    lonRad = deg2rad(lonDeg);
-                    rKm    = ReKm + altM/1000;
-                    
-                    x(i) = rKm * cos(latRad) * cos(lonRad);
-                    y(i) = rKm * cos(latRad) * sin(lonRad);
-                    z(i) = rKm * sin(latRad);
-                else
-                    % Satellite: use states(handle, t) -> position in meters
-                    pos = states(node.handle, t);  % [3 x 1 x 1] or [3 x 1]
-                    pos = squeeze(pos);            % [3 x 1]
-                    
-                    x(i) = pos(1) / 1000;  % m -> km
-                    y(i) = pos(2) / 1000;
-                    z(i) = pos(3) / 1000;
-                end
+                [x(i), y(i), z(i)] = scenarioManager.getXYZ(nodeNames{i}, t);
             end
         end
+
         
         function tf = hasLOSFromXYZ(obj, p1Km, p2Km)
             % hasLOSFromXYZ - geometric line-of-sight test vs Earth sphere
-            ReKm = 6371;
-            d = p2Km - p1Km;
-            r1 = p1Km;
+            ReKm = 6350;              % spherical Earth radius
+            d    = p2Km - p1Km;
+            r1   = p1Km;
             
             a = dot(d,d);
             b = 2*dot(r1,d);

@@ -496,19 +496,9 @@ classdef DTNApp < handle
                 end
             end
             
-            % Get positions (geographic) then convert to ECEF-ish
-            [lat1, lon1, alt1] = app.scenarioManager.getLatLonAlt(fromName, t);
-            [lat2, lon2, alt2] = app.scenarioManager.getLatLonAlt(toName, t);
-            
-            ReKm = 6371;
-            r1Km = ReKm + alt1/1000;
-            r2Km = ReKm + alt2/1000;
-            x1 = r1Km * cosd(lat1) * cosd(lon1);
-            y1 = r1Km * cosd(lat1) * sind(lon1);
-            z1 = r1Km * sind(lat1);
-            x2 = r2Km * cosd(lat2) * cosd(lon2);
-            y2 = r2Km * cosd(lat2) * sind(lon2);
-            z2 = r2Km * sind(lat2);
+            % Get positions directly via states() so we match the viewer
+            [x1, y1, z1] = app.scenarioManager.getXYZ(fromName, t);
+            [x2, y2, z2] = app.scenarioManager.getXYZ(toName, t);
             
             p1 = [x1 y1 z1];
             p2 = [x2 y2 z2];
@@ -540,18 +530,31 @@ classdef DTNApp < handle
                 return;
             end
             
-            % Simple RTT
+            % RTT model:
+            %   RTT = 2 * propagation + 2 * serialization + 2 * handshake
             dM  = dKm * 1e3;
             c   = 3e8; % speed of light m/s
-            rtt_ms = 2 * dM / c * 1e3;
+            prop_s = 2 * dM / c;    % there & back
             
-            msg = sprintf('Ping %s -> %s at %s\nRange: %.1f km\nRTT: %.2f ms', ...
-                fromName, toName, datestr(t), dKm, rtt_ms);
+            packetBits = app.dtnConfig.packetSizeBytes * 8;
+            txOneWay_s = packetBits / profile.dataRate_bps;
+            
+            handshake_s = profile.handshakeOverhead_s;
+            
+            rtt_s  = prop_s + 2*txOneWay_s + 2*handshake_s;
+            rtt_ms = rtt_s * 1e3;
+            
+            msg = sprintf(['Ping %s -> %s at %s\nRange: %.1f km\n' ...
+                           'RTT: %.3f ms (prop=%.3f ms, PHY=%.3f ms, handshake=%.3f ms)'], ...
+                fromName, toName, datestr(t), dKm, ...
+                rtt_ms, prop_s*1e3, 2*txOneWay_s*1e3, 2*handshake_s*1e3);
             uialert(app.fig, msg, 'Ping Result');
             
             % Log successful ping
-            entry = sprintf('[PING] %s -> %s at %s, range=%.1f km, RTT=%.2f ms (PHY=%s)', ...
-                fromName, toName, datestr(t), dKm, rtt_ms, profile.name);
+            entry = sprintf(['[PING] %s -> %s at %s, range=%.1f km, RTT=%.3f ms ' ...
+                             '(PHY=%s, pkt=%d B)'], ...
+                fromName, toName, datestr(t), dKm, rtt_ms, ...
+                profile.name, app.dtnConfig.packetSizeBytes);
             app.logLines{end+1} = entry;
             app.updateLogText();
         end
@@ -652,6 +655,7 @@ classdef DTNApp < handle
             cfg.realTimeSpeed  = app.scenarioSpeedField.Value;
             
             cfg.ttlMinutes     = app.dtnConfig.ttlMinutes;
+            cfg.packetSizeBytes = app.dtnConfig.packetSizeBytes;
             
             % Create simulator
             sim = dtn.DTNSimulator(cfg);

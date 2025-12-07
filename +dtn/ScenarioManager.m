@@ -173,6 +173,38 @@ classdef ScenarioManager < handle
             end
         end
 
+        function [xKm, yKm, zKm] = getXYZ(obj, nodeName, t)
+            % getXYZ - ECEF-ish position in km for any node.
+            % Satellites: use states(...,'geographic') via getLatLonAlt.
+            % Ground stations: use stored lat/lon/alt (fixed).
+            
+            idx = obj.findNodeIndex(nodeName);
+            if isempty(idx)
+                error('Node %s not found in ScenarioManager.', nodeName);
+            end
+            node = obj.nodes(idx);
+            
+            ReKm = 6371;  % Earth radius in km (approx)
+            
+            if strcmp(node.type, 'gs')
+                % Ground station: fixed geographic coordinates
+                latDeg = node.latDeg;
+                lonDeg = node.lonDeg;
+                altM   = node.altM;
+            else
+                % Satellite: get geographic coordinates from states()
+                [latDeg, lonDeg, altM] = obj.getLatLonAlt(nodeName, t);
+            end
+            
+            rKm  = ReKm + altM/1000;
+            latR = deg2rad(latDeg);
+            lonR = deg2rad(lonDeg);
+            
+            xKm = rKm * cos(latR) * cos(lonR);
+            yKm = rKm * cos(latR) * sin(lonR);
+            zKm = rKm * sin(latR);
+        end
+
     end
     
     methods (Access = private)

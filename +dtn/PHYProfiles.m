@@ -1,44 +1,35 @@
 classdef PHYProfiles
-    % PHYProfiles - return PHY parameter sets for satellite links
+    % PHYProfiles - simple physical layer profiles for DTN sim
     %
-    % Each profile includes:
-    %   dataRate_bps  - nominal data rate
-    %   discovery_s   - neighbor discovery / handshake overhead
-    %   handshake_s   - initial handshake before data
-    %   ber           - bit error rate (placeholder for link errors)
-    %   maxRangeKm    - max link range; beyond this, no communication
-    
+    % Fields returned by getProfile(name):
+    %   name                 - profile name
+    %   maxRangeKm           - maximum link range
+    %   dataRate_bps         - nominal data rate (bits per second)
+    %   handshakeOverhead_s  - per-direction handshake / MAC overhead (sec)
+
     methods (Static)
-        function profile = getProfile(mode)
-            % Returns a struct with basic PHY parameters
-            
-            switch mode
+        function profile = getProfile(name)
+            switch name
                 case 'SBand'
-                    profile.name          = 'SBand';
-                    profile.dataRate_bps  = 1e6;     % ~1 Mbps
-                    profile.discovery_s   = 5;       % seconds
-                    profile.handshake_s   = 1;       % seconds
-                    profile.ber           = 1e-5;
-                    profile.maxRangeKm    = 4000;    % LEO-LEO / LEO-GS scale
-                    
+                    profile.name                = 'SBand';
+                    profile.maxRangeKm          = 4000;      % LEO-ish
+                    profile.dataRate_bps        = 1e6;       % 1 Mbps
+                    profile.handshakeOverhead_s = 0.050;     % 50 ms
+
                 case 'KaBand'
-                    profile.name          = 'KaBand';
-                    profile.dataRate_bps  = 100e6;   % ~100 Mbps
-                    profile.discovery_s   = 8;       % more overhead for pointing, etc.
-                    profile.handshake_s   = 2;
-                    profile.ber           = 5e-6;
-                    profile.maxRangeKm    = 3500;    % slightly tighter, pointing-limited
-                    
+                    profile.name                = 'KaBand';
+                    profile.maxRangeKm          = 3000;
+                    profile.dataRate_bps        = 1e8;       % 100 Mbps
+                    profile.handshakeOverhead_s = 0.010;     % 10 ms
+
                 case 'SatelliteRF'
-                    profile.name          = 'SatelliteRF';
-                    profile.dataRate_bps  = 10e6;    % generic moderate rate
-                    profile.discovery_s   = 6;
-                    profile.handshake_s   = 1.5;
-                    profile.ber           = 1e-4;
-                    profile.maxRangeKm    = 5000;    % very generous general RF
-                    
+                    profile.name                = 'SatelliteRF';
+                    profile.maxRangeKm          = 3000;
+                    profile.dataRate_bps        = 1e7;       % 10 Mbps
+                    profile.handshakeOverhead_s = 0.020;     % 20 ms
+
                 otherwise
-                    error('Unknown PHY mode: %s', mode);
+                    error('Unknown PHY profile "%s".', name);
             end
         end
     end
