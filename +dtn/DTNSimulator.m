@@ -107,16 +107,7 @@ classdef DTNSimulator < handle
         
         function [bundles, logLines] = run(obj, scenarioManager, viewer)
             % run - execute the scenario using the given ScenarioManager
-            %
-            % Inputs:
-            %   scenarioManager - dtn.ScenarioManager
-            %   viewer          - satelliteScenarioViewer handle (or [])
-            %
-            % Outputs:
-            %   bundles   - final bundle array
-            %   logLines  - cell array of log strings
 
-            % Reset stop flag at the beginning of every run
             obj.stopRequested = false;
             
             nodes     = scenarioManager.nodes;
@@ -174,12 +165,11 @@ classdef DTNSimulator < handle
                 bd.releaseTime   = obj.startTime + minutes(offsetsMin(b));
                 bd.born          = false;
                 
-                % Spray-and-Wait copy limits (simplified L-copies version)
                 if strcmp(obj.routing, 'SprayAndWait')
-                    bd.maxCopies  = 8;   % total distinct nodes that can ever hold this bundle
-                    bd.copiesUsed = 0;   % will set to 1 at birth when src gets copy
+                    bd.maxCopies  = 8;
+                    bd.copiesUsed = 0;
                 else
-                    bd.maxCopies  = 0;   % 0 => unlimited (Epidemic / PRoPHET)
+                    bd.maxCopies  = 0;
                     bd.copiesUsed = 0;
                 end
                 
@@ -197,7 +187,6 @@ classdef DTNSimulator < handle
                     obj.routing));
             end
             
-            % Effective time span for DTN sim (in seconds) after simStartOffset
             totalSeconds = obj.horizonMinutes * 60 - obj.simStartOffsetMinutes * 60;
             if totalSeconds <= 0
                 obj.appendLog('WARNING: Horizon minutes <= simStartOffsetMinutes; nothing to simulate.');
@@ -211,11 +200,9 @@ classdef DTNSimulator < handle
                 nSteps = 1;
             end
             
-            % TTL in seconds (0 => TTL disabled)
             ttlSec = obj.ttlMinutes * 60;
             useTTL = ttlSec > 0;
             
-            % Rendering decimation for higher speeds
             renderInterval = 1;
             if obj.realTimeSpeed > 20
                 renderInterval = 5;
@@ -230,13 +217,25 @@ classdef DTNSimulator < handle
             simStartOffsetSec = obj.simStartOffsetMinutes * 60;
             simEndTime = obj.startTime + minutes(obj.horizonMinutes);
             
-            % Main time-stepped loop
+            % Real-time pacing reference
+            wallStart = [];
+            if obj.realTimeSpeed > 0
+                wallStart = tic;
+            end
+            firstStepSimTime = [];
+            lastStepSimTime  = [];
+            
+            % Main loop
             for step = 1:nSteps
                 t = obj.startTime + seconds(simStartOffsetSec + (step-1)*obj.stepSeconds);
+                if isempty(firstStepSimTime)
+                    firstStepSimTime = t;
+                end
+                lastStepSimTime = t;
                 
-                % Compute node positions / adjacency
                 [x, y, z] = obj.computeNodeXYZ(scenarioManager, nodeNames, t);
                 
+                nNodes = numel(nodeNames);
                 connected = false(nNodes, nNodes);
                 for i = 1:nNodes
                     for j = i+1:nNodes
@@ -244,12 +243,9 @@ classdef DTNSimulator < handle
                         p2 = [x(j) y(j) z(j)];
                         dKm = norm(p1 - p2);
                         
-                        % Earth occlusion
                         if ~obj.hasLOSFromXYZ(p1, p2)
                             continue;
                         end
-                        
-                        % PHY range
                         if dKm <= profile.maxRangeKm
                             connected(i,j) = true;
                             connected(j,i) = true;
@@ -257,33 +253,26 @@ classdef DTNSimulator < handle
                     end
                 end
                 
-                % Forward bundles
-                allDone = true;  % assume done until we see active/pending ones
+                allDone = true;
                 
                 for b = 1:numel(obj.bundles)
                     bd = obj.bundles(b);
                     
-                    % If releaseTime is after sim end, this bundle will never be simulated;
-                    % treat it as "done" for early-stop purposes (logged later).
                     if bd.releaseTime > simEndTime
                         obj.bundles(b) = bd;
                         continue;
                     end
                     
-                    % Not yet born?
                     if ~bd.born
                         if t < bd.releaseTime
-                            % Waiting to be born; scenario not done yet
                             allDone = false;
                             obj.bundles(b) = bd;
                             continue;
                         end
                         
-                        % Birth moment
                         bd.born    = true;
                         bd.holders = {bd.src};
                         if bd.maxCopies > 0 && bd.copiesUsed == 0
-                            % Source now holds one copy
                             bd.copiesUsed = 1;
                         end
                         obj.appendLog(sprintf('t=%s: bundle %d RELEASED at %s (dst=%s)', ...
@@ -291,17 +280,13 @@ classdef DTNSimulator < handle
                             bd.id, bd.src, bd.dst));
                     end
                     
-                    % Now bd.born==true
                     if bd.delivered || bd.expired
-                        % Already finished; leave allDone as is (could be false from others)
                         obj.bundles(b) = bd;
                         continue;
                     end
                     
-                    % At this point, bundle is active; scenario not done
                     allDone = false;
                     
-                    % TTL check relative to releaseTime
                     if useTTL
                         ageSec = seconds(t - bd.releaseTime);
                         if ageSec > ttlSec
@@ -318,13 +303,11 @@ classdef DTNSimulator < handle
                     holders    = bd.holders;
                     newHolders = holders;
                     
-                    % --- Routing behavior ---
                     routeMode = obj.routing;
                     if ~ismember(routeMode, {'Epidemic','PRoPHET','SprayAndWait'})
-                        routeMode = 'Epidemic';  % fallback
+                        routeMode = 'Epidemic';
                     end
                     
-                    % For PRoPHET/Spray, we need distances to this bundle's destination
                     idxDst = nameToIdx(bd.dst);
                     dstPos = [x(idxDst) y(idxDst) z(idxDst)];
                     distToDstKm = zeros(1, nNodes);
@@ -334,21 +317,13 @@ classdef DTNSimulator < handle
                     
                     switch routeMode
                         case 'Epidemic'
-                            % Flood to all neighbors that don't yet hold the bundle
                             for hIdx = 1:numel(holders)
                                 hName = holders{hIdx};
                                 i = nameToIdx(hName);
-                                
                                 for j = 1:nNodes
-                                    if ~connected(i,j)
-                                        continue;
-                                    end
+                                    if ~connected(i,j), continue; end
                                     neighName = nodeNames{j};
-                                    
-                                    if any(strcmp(newHolders, neighName))
-                                        continue;
-                                    end
-                                    
+                                    if any(strcmp(newHolders, neighName)), continue; end
                                     newHolders{end+1} = neighName; %#ok<AGROW>
                                     bd.numHops = bd.numHops + 1;
                                     obj.appendLog(sprintf('t=%s: bundle %d forwarded %s -> %s', ...
@@ -358,37 +333,22 @@ classdef DTNSimulator < handle
                             end
                             
                         case 'PRoPHET'
-                            % Simplified PRoPHET:
-                            % For each holder, forward only to ONE neighbor (the closest
-                            % to dst) that is closer to dst than the holder and doesn't
-                            % already have the bundle.
                             for hIdx = 1:numel(holders)
                                 hName = holders{hIdx};
                                 i = nameToIdx(hName);
-                                
                                 dHolder = distToDstKm(i);
-                                bestJ   = [];
-                                bestD   = Inf;
-                                
+                                bestJ = [];
+                                bestD = Inf;
                                 for j = 1:nNodes
-                                    if ~connected(i,j)
-                                        continue;
-                                    end
+                                    if ~connected(i,j), continue; end
                                     neighName = nodeNames{j};
-                                    
-                                    if any(strcmp(newHolders, neighName))
-                                        continue;
-                                    end
-                                    
+                                    if any(strcmp(newHolders, neighName)), continue; end
                                     dNeigh = distToDstKm(j);
-                                    
-                                    % Only neighbors strictly closer to dst
                                     if dNeigh < dHolder && dNeigh < bestD
                                         bestD = dNeigh;
                                         bestJ = j;
                                     end
                                 end
-                                
                                 if ~isempty(bestJ)
                                     neighName = nodeNames{bestJ};
                                     newHolders{end+1} = neighName; %#ok<AGROW>
@@ -400,25 +360,14 @@ classdef DTNSimulator < handle
                             end
                             
                         case 'SprayAndWait'
-                            % Simplified L-copies Spray-and-Wait:
-                            % - total distinct nodes that can ever have this bundle = maxCopies
-                            % - each new node consumes one copy from the budget
                             if bd.maxCopies <= 0
-                                % Fallback: behave like Epidemic if not configured
                                 for hIdx = 1:numel(holders)
                                     hName = holders{hIdx};
                                     i = nameToIdx(hName);
-                                    
                                     for j = 1:nNodes
-                                        if ~connected(i,j)
-                                            continue;
-                                        end
+                                        if ~connected(i,j), continue; end
                                         neighName = nodeNames{j};
-                                        
-                                        if any(strcmp(newHolders, neighName))
-                                            continue;
-                                        end
-                                        
+                                        if any(strcmp(newHolders, neighName)), continue; end
                                         newHolders{end+1} = neighName; %#ok<AGROW>
                                         bd.numHops = bd.numHops + 1;
                                         obj.appendLog(sprintf('t=%s: bundle %d forwarded %s -> %s (Spray fallback)', ...
@@ -427,45 +376,30 @@ classdef DTNSimulator < handle
                                     end
                                 end
                             else
-                                % Limited copies:
-                                % For each holder, forward to ONE neighbor that is closer
-                                % to dst, and only while copiesUsed < maxCopies.
                                 for hIdx = 1:numel(holders)
                                     hName = holders{hIdx};
                                     i = nameToIdx(hName);
-                                    
-                                    % If we've already exhausted the copy budget, stop.
                                     if bd.copiesUsed >= bd.maxCopies
                                         break;
                                     end
-                                    
                                     dHolder = distToDstKm(i);
-                                    bestJ   = [];
-                                    bestD   = Inf;
-                                    
+                                    bestJ = [];
+                                    bestD = Inf;
                                     for j = 1:nNodes
-                                        if ~connected(i,j)
-                                            continue;
-                                        end
+                                        if ~connected(i,j), continue; end
                                         neighName = nodeNames{j};
-                                        
-                                        if any(strcmp(newHolders, neighName))
-                                            continue;
-                                        end
-                                        
+                                        if any(strcmp(newHolders, neighName)), continue; end
                                         dNeigh = distToDstKm(j);
                                         if dNeigh < dHolder && dNeigh < bestD
                                             bestD = dNeigh;
                                             bestJ = j;
                                         end
                                     end
-                                    
                                     if ~isempty(bestJ) && bd.copiesUsed < bd.maxCopies
                                         neighName = nodeNames{bestJ};
                                         newHolders{end+1} = neighName; %#ok<AGROW>
                                         bd.numHops   = bd.numHops + 1;
                                         bd.copiesUsed = bd.copiesUsed + 1;
-                                        
                                         obj.appendLog(sprintf('t=%s: bundle %d forwarded %s -> %s (Spray-and-Wait, copy %d/%d)', ...
                                             datestr(t, 'dd-mmm-yyyy HH:MM:SS.FFF'), ...
                                             bd.id, hName, neighName, ...
@@ -477,7 +411,6 @@ classdef DTNSimulator < handle
                     
                     bd.holders = unique(newHolders);
                     
-                    % Check delivery to per-bundle destination
                     if any(strcmp(bd.holders, bd.dst))
                         if ~bd.delivered
                             bd.delivered     = true;
@@ -491,7 +424,7 @@ classdef DTNSimulator < handle
                     obj.bundles(b) = bd;
                 end
                 
-                % Update viewer & draw only every renderInterval steps
+                % Viewer update
                 doRender = (mod(step-1, renderInterval) == 0);
                 if ~isempty(viewer) && isvalid(viewer) && doRender
                     try
@@ -503,20 +436,24 @@ classdef DTNSimulator < handle
                     drawnow limitrate;
                 end
                 
-                % Real-time playback: pause according to speed factor
-                if obj.realTimeSpeed > 0
-                    pause(obj.stepSeconds / obj.realTimeSpeed);
+                % Real-time pacing
+                if obj.realTimeSpeed > 0 && ~isempty(wallStart)
+                    simElapsed   = seconds(lastStepSimTime - firstStepSimTime);
+                    desiredReal  = simElapsed / obj.realTimeSpeed;
+                    actualReal   = toc(wallStart);
+                    extraPause   = desiredReal - actualReal;
+                    if extraPause > 0
+                        pause(extraPause);
+                    else
+                        pause(0);
+                    end
                 else
-                    % 0 => run as fast as possible; tiny pause to keep GUI responsive
                     pause(0);
                 end
                 
-                % Stop early if all bundles are done
                 if allDone
                     break;
                 end
-                
-                % Stop early if user requested
                 if obj.stopRequested
                     obj.appendLog('--- Scenario stopped by user ---');
                     break;
@@ -530,7 +467,6 @@ classdef DTNSimulator < handle
             obj.appendLog(sprintf('--- Scenario end: %d/%d bundles delivered ---', ...
                 deliveredCount, numel(obj.bundles)));
             
-            % PHY-based per-hop delay (one-way) for bundles
             profile     = dtn.PHYProfiles.getProfile(obj.phyMode);
             packetBits  = obj.packetSizeBytes * 8;
             hopDelay_s  = packetBits / profile.dataRate_bps + profile.handshakeOverhead_s;
@@ -539,11 +475,9 @@ classdef DTNSimulator < handle
             ttlSec  = obj.ttlMinutes * 60;
             useTTL  = ttlSec > 0;
             
-            % Per-bundle delay summary
             for b = 1:numel(obj.bundles)
                 bd = obj.bundles(b);
                 if bd.delivered
-                    % Delay measured from releaseTime
                     baseDelay_s   = seconds(bd.deliveredTime - bd.releaseTime);
                     protoDelay_s  = bd.numHops * hopDelay_s;
                     totalDelay_s  = baseDelay_s + protoDelay_s;
@@ -561,7 +495,6 @@ classdef DTNSimulator < handle
                         datestr(bd.releaseTime), datestr(bd.expiredTime), ...
                         bd.src, bd.dst));
                 else
-                    % Not delivered and not TTL-expired by horizon
                     if bd.releaseTime > simEndTime
                         obj.appendLog(sprintf(['Bundle %d NOT simulated: release time %s ' ...
                                                'is after simulation end %s (src=%s, dst=%s).'], ...
@@ -576,46 +509,47 @@ classdef DTNSimulator < handle
                 end
             end
             
+            % Effective playback speed log
+            if obj.realTimeSpeed > 0 && ~isempty(firstStepSimTime) && ~isempty(wallStart)
+                simElapsed  = seconds(lastStepSimTime - firstStepSimTime);
+                wallElapsed = toc(wallStart);
+                if wallElapsed > 0
+                    effSpeed = simElapsed / wallElapsed;
+                    obj.appendLog(sprintf('[INFO] Effective playback speed ≈ %.2fx (requested %.2fx)', ...
+                        effSpeed, obj.realTimeSpeed));
+                end
+            end
+            
             bundles  = obj.bundles;
             logLines = obj.logLines;
         end
     end
     
     methods (Access = private)
-        function [x, y, z] = computeNodeXYZ(obj, scenarioManager, nodeNames, t)
-            % computeNodeXYZ - get node positions for distance calculations
-            % Uses ScenarioManager.getXYZ() so geometry matches ping + viewer.
-            
+        function [x, y, z] = computeNodeXYZ(~, scenarioManager, nodeNames, t)
             nNodes = numel(nodeNames);
             x = zeros(1, nNodes);
             y = zeros(1, nNodes);
             z = zeros(1, nNodes);
-            
             for i = 1:nNodes
                 [x(i), y(i), z(i)] = scenarioManager.getXYZ(nodeNames{i}, t);
             end
         end
         
-        function tf = hasLOSFromXYZ(obj, p1Km, p2Km)
-            % hasLOSFromXYZ - geometric line-of-sight test vs Earth sphere
-            % Slightly smaller radius to align better with access() horizon
+        function tf = hasLOSFromXYZ(~, p1Km, p2Km)
             ReKm = 6350;
             d    = p2Km - p1Km;
             r1   = p1Km;
-            
             a = dot(d,d);
             b = 2*dot(r1,d);
             c = dot(r1,r1) - ReKm^2;
-            
             disc = b^2 - 4*a*c;
             if disc <= 0
                 tf = true;
                 return;
             end
-            
             s1 = (-b - sqrt(disc)) / (2*a);
             s2 = (-b + sqrt(disc)) / (2*a);
-            
             if (s1 >= 0 && s1 <= 1) || (s2 >= 0 && s2 <= 1)
                 tf = false;
             else
@@ -624,15 +558,11 @@ classdef DTNSimulator < handle
         end
         
         function appendLog(obj, msg)
-            % Store in internal log
             obj.logLines{end+1} = msg;
-            
-            % Stream to GUI if callback is set
             if ~isempty(obj.logCallback)
                 try
                     obj.logCallback(msg);
                 catch
-                    % ignore GUI errors so sim can keep running
                 end
             end
         end

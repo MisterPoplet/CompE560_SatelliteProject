@@ -67,7 +67,7 @@ classdef DTNApp < handle
         scenarioTTLField          matlab.ui.control.NumericEditField
         scenarioPacketSizeField   matlab.ui.control.NumericEditField
         scenarioStartOffsetField  matlab.ui.control.NumericEditField
-        scenarioSpeedField        matlab.ui.control.NumericEditField
+        scenarioSpeedDropDown     matlab.ui.control.DropDown
         runScenarioButton         matlab.ui.control.Button
         stopScenarioButton        matlab.ui.control.Button  % mapped to reset
         
@@ -440,12 +440,12 @@ classdef DTNApp < handle
             y = y - dy;
             
             % Playback speed (x real time)
-            uilabel(panel, 'Position', [20 y 220 20], ...
-                'Text', 'Playback speed (x real time):');
-            app.scenarioSpeedField = uieditfield(panel, 'numeric', ...
-                'Position', [240 y 80 22], ...
-                'Value', 5, ...
-                'Limits', [0 Inf]);   % 0 = run as fast as possible
+            uilabel(panel, 'Position', [20 360 200 20], ...
+                'Text', 'Playback speed:');
+            app.scenarioSpeedDropDown = uidropdown(panel, ...
+                'Position', [220 360 120 22], ...
+                'Items', {'1x (real-time)','Max (as fast as possible)'}, ...
+                'Value', '1x (real-time)');
             y = y - dy;
             
             % Run Scenario button
@@ -1229,7 +1229,16 @@ classdef DTNApp < handle
             cfg.stepSeconds    = 1;        % 1-second simulation steps
 
             % Real-time playback speed (0 => as fast as possible)
-            cfg.realTimeSpeed  = app.scenarioSpeedField.Value;
+            choice = app.scenarioSpeedDropDown.Value;
+            switch choice
+                case '1x (real-time)'
+                    cfg.realTimeSpeed = 1;   % one sim-second per real second
+                case 'Max (as fast as possible)'
+                    cfg.realTimeSpeed = 0;   % no pacing, CPU-limited
+                otherwise
+                    cfg.realTimeSpeed = 1;   % safe default
+            end
+
 
             % TTL + packet size from Scenario tab
             cfg.ttlMinutes      = app.scenarioTTLField.Value;
